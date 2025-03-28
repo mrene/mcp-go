@@ -36,7 +36,14 @@ type SSEMCPClient struct {
 	endpointChan  chan struct{}
 	capabilities  mcp.ServerCapabilities
 	headers       map[string]string
+	connected     atomic.Bool
 }
+
+var (
+	ErrDisconnected        = errors.New("SSE stream is disconnected")
+	ErrNotInitialized      = errors.New("client not initialized")
+	ErrEndpointNotReceived = errors.New("endpoint not received")
+)
 
 type ClientOption func(*SSEMCPClient)
 
@@ -109,13 +116,20 @@ func (c *SSEMCPClient) Start(ctx context.Context) error {
 		return fmt.Errorf("timeout waiting for endpoint")
 	}
 
+	c.connected.Store(true)
+
 	return nil
+}
+
+func (c *SSEMCPClient) Connected() bool {
+	return c.connected.Load()
 }
 
 // readSSE continuously reads the SSE stream and processes events.
 // It runs until the connection is closed or an error occurs.
 func (c *SSEMCPClient) readSSE(reader io.ReadCloser) {
 	defer reader.Close()
+	defer func() { c.connected.Store(false) }()
 
 	br := bufio.NewReader(reader)
 	var event, data string
@@ -251,11 +265,15 @@ func (c *SSEMCPClient) sendRequest(
 	params interface{},
 ) (*json.RawMessage, error) {
 	if !c.initialized && method != "initialize" {
-		return nil, fmt.Errorf("client not initialized")
+		return nil, ErrNotInitialized
 	}
 
 	if c.endpoint == nil {
-		return nil, fmt.Errorf("endpoint not received")
+		return nil, ErrEndpointNotReceived
+	}
+
+	if !c.connected.Load() {
+		return nil, ErrDisconnected
 	}
 
 	id := c.requestID.Add(1)
